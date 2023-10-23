@@ -21,7 +21,7 @@ private:
 
     void callbackGridMap(const grid_map_msgs::msg::GridMap::UniquePtr msg);
     
-    bool getContours(grid_map::GridMap& map, const float label);
+    void getContours(grid_map::GridMap& map, const float label, std::vector<Eigen::MatrixXd>& contours_matrix, Eigen::Vector3d& normal);
     std::vector<float> findLabels(const grid_map::Matrix& labels);
 };
 }

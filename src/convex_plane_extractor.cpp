@@ -30,8 +30,19 @@ void ConvexPlaneExtractor::callbackGridMap(const grid_map_msgs::msg::GridMap::Un
     RCLCPP_INFO(get_logger(), "label list size: %ld", label_list.size());
     // RCLCPP_INFO(get_logger(), "min label: %f", *std::min_element(label_list.begin(), label_list.end()));
     // RCLCPP_INFO(get_logger(), "max label: %f", *std::max_element(label_list.begin(), label_list.end()));
+    std::vector<Eigen::MatrixXd> contours;
+    Eigen::Vector3d normal;
     for (size_t i=0; i<label_list.size(); ++i)
-        getContours(map, label_list[i]);
+    {
+        getContours(map, label_list[i], contours, normal);
+        
+    }
+
+    // RCLCPP_INFO(get_logger(), "convert to message");
+    grid_map_msgs::msg::GridMap::UniquePtr out_msg = grid_map::GridMapRosConverter::toMessage(map);
+
+    RCLCPP_INFO(get_logger(), "publish map address: 0x%x", &(out_msg->data));
+    pub_map_->publish(std::move(out_msg));
 
     auto end = std::chrono::high_resolution_clock::now();
 
@@ -64,7 +75,7 @@ std::vector<float> ConvexPlaneExtractor::findLabels(const grid_map::Matrix& labe
 
 
 
-bool ConvexPlaneExtractor::getContours(grid_map::GridMap& map, const float label)
+void ConvexPlaneExtractor::getContours(grid_map::GridMap& map, const float label, std::vector<Eigen::MatrixXd>& contours_matrix, Eigen::Vector3d& normal)
 {
     // RCLCPP_INFO(get_logger(), "create binary matrix");
     if (!map.exists("binary_matrix"))
@@ -72,6 +83,12 @@ bool ConvexPlaneExtractor::getContours(grid_map::GridMap& map, const float label
         map.add("binary_matrix", map.get("valid_labels"));
     }
     grid_map::Matrix& binary = map.get("binary_matrix");
+    const grid_map::Matrix& normal_x = map.get("normal_vectors_x");
+    const grid_map::Matrix& normal_y = map.get("normal_vectors_y");
+    const grid_map::Matrix& normal_z = map.get("normal_vectors_z");
+    
+    int labeled_cell_num = 0;
+    normal.fill(0.0);
     for (grid_map::GridMapIterator iter(map); !iter.isPastEnd(); ++iter)
     {
         grid_map::Index index = *iter;
@@ -85,71 +102,76 @@ bool ConvexPlaneExtractor::getContours(grid_map::GridMap& map, const float label
         else
         {
             binary(index(0), index(1)) = 255;
+            normal(0) += normal_x(index(0), index(1));
+            normal(1) += normal_y(index(0), index(1));
+            normal(2) += normal_z(index(0), index(1));
+            ++labeled_cell_num;
         }
     }
+    if (labeled_cell_num == 0)
+    {
+        RCLCPP_ERROR(get_logger(), "number of cells labeled %f is equal to 0", label);
+        rclcpp::shutdown();
+    }
+    normal /= labeled_cell_num;
+    RCLCPP_INFO(get_logger(), "normal for label %f: (%lf, %lf, %lf)", label, normal(0), normal(1), normal(2));
 
     // RCLCPP_INFO(get_logger(), "conver to image");
     cv::Mat label_image;
     grid_map::GridMapCvConverter::toImage<unsigned char, 1>(map, "binary_matrix", CV_8UC1, label_image);
 
-    // // const grid_map::Matrix& label_mat = map.get("labels");
-    // RCLCPP_INFO(get_logger(), "get iterator");
-    // grid_map::Index base_ind;
-    // for (grid_map::GridMapIterator iter(map); !iter.isPastEnd(); ++iter)
-    // {
-    //     if (map.at("labels", *iter) == NAN) continue;
-
-    //     if (map.at("labels", *iter) == label)
-    //     {
-    //         base_ind = iter.getUnwrappedIndex();
-    //         break;
-    //     }
-    // }
-
-    // RCLCPP_INFO(get_logger(), "conver to image");
-    // cv::Mat image;
-    // std::string input_layer = "labels";
-    // grid_map::GridMapCvConverter::toImage<unsigned char, 1>(map, input_layer, CV_8UC1, image);
-    // RCLCPP_INFO(get_logger(), "get base value");
-    // const int base_value = image.at<cv::Vec<unsigned char, 1>>(base_ind(0), base_ind(1))[0];
-
-    // RCLCPP_INFO(get_logger(), "get binary image");
-    // cv::Mat label_image;
-    // // set values of cells smaller than label to 0
-    // cv::threshold(image, label_image, base_value-1, 255, CV_THRESH_TOZERO | CV_THRESH_OTSU);
-    // // set values of cell larger than label to 0
-    // cv::threshold(label_image, label_image, base_value+1, 255, CV_THRESH_BINARY_INV | CV_THRESH_OTSU);
-
     std::vector<std::vector<cv::Point>> contours;
     std::vector<cv::Vec4i> hierarchy;
     cv::Mat label_image_copy = label_image;
-    cv::findContours(label_image_copy, contours, hierarchy, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_NONE);
+    cv::findContours(label_image_copy, contours, hierarchy, CV_RETR_CCOMP, CV_CHAIN_APPROX_SIMPLE);
     RCLCPP_INFO(get_logger(), "contour size: %ld", contours.size());
-    // if (contours.size() != 1)
-    // {
-    //     RCLCPP_ERROR(get_logger(), "Size of the contour of region labeled %f ", label);
-    // }
+
+    int point_num = 0;
     for (size_t i=0; i<contours.size(); ++i)
     {
-        // RCLCPP_INFO(get_logger(), "Size of contour %d: %ld", i, contours[i].size());
-        for (const cv::Point& ponit : contours[i])
-        {
-            label_image.at<cv::Vec<unsigned char, 1>>(ponit)[0] = 128;
-        }
+        point_num += contours[i].size();
     }
-
 
     // RCLCPP_INFO(get_logger(), "add layer");
     std::string output_layer = "plane_"+std::to_string(static_cast<int>(label));
     grid_map::GridMapCvConverter::addLayerFromImage<unsigned char, 1>(label_image, output_layer, map);    
 
-    // RCLCPP_INFO(get_logger(), "convert to message");
-    grid_map_msgs::msg::GridMap::UniquePtr out_msg = grid_map::GridMapRosConverter::toMessage(map);
+    int contours_index = 0;
+    contours_matrix.resize(point_num);
+    grid_map::Position pos_xy;
+    grid_map::Index index;
+    for (size_t i=0; i<point_num; ++i) contours_matrix[i].resize(2, 2);
+    for (const std::vector<cv::Point>& contour: contours)
+    {
+        for (int i=0; i<contour.size(); ++i)
+        {
+            index(0) = contour[i].y;
+            index(1) = contour[i].x;
+            if (!map.getPosition(index, pos_xy))
+            {
+                RCLCPP_ERROR(get_logger(), "The index (%d, %d) is out of range", index.x(), index.y());
+                continue;
+            }
+            contours_matrix[contours_index+i].col(0) = pos_xy;
+            if (i==0) contours_matrix[contours_index+contour.size()-1].col(1) = pos_xy;
+            else contours_matrix[contours_index + i-1].col(1) = pos_xy;
+        }
+        contours_index+=contour.size();
+    }
+    // RCLCPP_INFO(get_logger(), "col_ind: %d, point num: %d", col_ind, point_num);
+    const float min_value = map.get(output_layer).minCoeff();
+    const float max_value =  map.get(output_layer).maxCoeff();
+    const float median_value = (min_value + max_value)*0.5;
 
-    RCLCPP_INFO(get_logger(), "publish map address: 0x%x", &(out_msg->data));
-    pub_map_->publish(std::move(out_msg));
-
-    return true;
+    for (int i=0; i<point_num; ++i)
+    {
+        if (!map.getIndex(contours_matrix[i].col(0), index))
+        {
+            RCLCPP_ERROR(get_logger(), "The position (%f, %f) is out of range", contours_matrix[i].col(0)(0), contours_matrix[i].col(0)(1));
+            continue;
+        }
+        map.at(output_layer, index) = median_value;
+    }
 }
 
 }
