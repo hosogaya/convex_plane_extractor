@@ -4,7 +4,7 @@ namespace convex_plane
 {
 
 ConvexPlaneExtractor::ConvexPlaneExtractor(const rclcpp::NodeOptions options)
-: rclcpp::Node("convex_plane_extractor", options)
+: rclcpp::Node("convex_plane_extractor", options), problem_(2)
 {
     sub_map_ = create_subscription<grid_map_msgs::msg::GridMap>(
         "convex_plane_extractor/input/grid_map", 1, std::bind(&ConvexPlaneExtractor::callbackGridMap, this, std::placeholders::_1)
@@ -32,10 +32,22 @@ void ConvexPlaneExtractor::callbackGridMap(const grid_map_msgs::msg::GridMap::Un
     // RCLCPP_INFO(get_logger(), "max label: %f", *std::max_element(label_list.begin(), label_list.end()));
     std::vector<Eigen::MatrixXd> contours;
     Eigen::Vector3d normal;
+    Eigen::Vector2d seed_pos;
     for (size_t i=0; i<label_list.size(); ++i)
     {
-        getContours(map, label_list[i], contours, normal);
-        
+        getContours(map, label_list[i], contours, normal, seed_pos);
+        problem_.setSeedPoint(seed_pos);
+        for (Eigen::MatrixXd& obs : contours) problem_.addObstacle(obs);
+        iris::IRISRegion region(2);
+        bool success = iris::inflate_region(problem_, options_, region, solver_);
+
+        if (success)
+        {
+            RCLCPP_INFO_STREAM(get_logger(), "C: " << region.ellipsoid.getC());
+            RCLCPP_INFO_STREAM(get_logger(), "d: " << region.ellipsoid.getD());
+            RCLCPP_INFO_STREAM(get_logger(), "A: " << region.polyhedron.getA());
+            RCLCPP_INFO_STREAM(get_logger(), "b: " << region.polyhedron.getB());
+        }
     }
 
     // RCLCPP_INFO(get_logger(), "convert to message");
@@ -75,7 +87,7 @@ std::vector<float> ConvexPlaneExtractor::findLabels(const grid_map::Matrix& labe
 
 
 
-void ConvexPlaneExtractor::getContours(grid_map::GridMap& map, const float label, std::vector<Eigen::MatrixXd>& contours_matrix, Eigen::Vector3d& normal)
+void ConvexPlaneExtractor::getContours(grid_map::GridMap& map, const float label, std::vector<Eigen::MatrixXd>& contours_matrix, Eigen::Vector3d& normal, Eigen::Vector2d& seed_pos)
 {
     // RCLCPP_INFO(get_logger(), "create binary matrix");
     if (!map.exists("binary_matrix"))
@@ -88,6 +100,7 @@ void ConvexPlaneExtractor::getContours(grid_map::GridMap& map, const float label
     const grid_map::Matrix& normal_z = map.get("normal_vectors_z");
     
     int labeled_cell_num = 0;
+    bool seed_flag = false;
     normal.fill(0.0);
     for (grid_map::GridMapIterator iter(map); !iter.isPastEnd(); ++iter)
     {
@@ -105,6 +118,8 @@ void ConvexPlaneExtractor::getContours(grid_map::GridMap& map, const float label
             normal(0) += normal_x(index(0), index(1));
             normal(1) += normal_y(index(0), index(1));
             normal(2) += normal_z(index(0), index(1));
+            if (!seed_flag)
+                if (map.getPosition(index, seed_pos)) seed_flag = true;
             ++labeled_cell_num;
         }
     }
@@ -123,7 +138,7 @@ void ConvexPlaneExtractor::getContours(grid_map::GridMap& map, const float label
     std::vector<std::vector<cv::Point>> contours;
     std::vector<cv::Vec4i> hierarchy;
     cv::Mat label_image_copy = label_image;
-    cv::findContours(label_image_copy, contours, hierarchy, CV_RETR_CCOMP, CV_CHAIN_APPROX_SIMPLE);
+    cv::findContours(label_image_copy, contours, hierarchy, CV_RETR_CCOMP, CV_CHAIN_APPROX_NONE);
     RCLCPP_INFO(get_logger(), "contour size: %ld", contours.size());
 
     int point_num = 0;
@@ -143,7 +158,7 @@ void ConvexPlaneExtractor::getContours(grid_map::GridMap& map, const float label
     for (size_t i=0; i<point_num; ++i) contours_matrix[i].resize(2, 2);
     for (const std::vector<cv::Point>& contour: contours)
     {
-        for (int i=0; i<contour.size(); ++i)
+        for (size_t i=0; i<contour.size(); ++i)
         {
             index(0) = contour[i].y;
             index(1) = contour[i].x;
@@ -158,6 +173,10 @@ void ConvexPlaneExtractor::getContours(grid_map::GridMap& map, const float label
         }
         contours_index+=contour.size();
     }
+
+    // for (size_t i=0; i<contours_matrix.size(); ++i)
+    //     RCLCPP_INFO_STREAM(get_logger(), "obs " << i << ": " << std::endl << contours_matrix[i] << std::endl);
+
     // RCLCPP_INFO(get_logger(), "col_ind: %d, point num: %d", col_ind, point_num);
     const float min_value = map.get(output_layer).minCoeff();
     const float max_value =  map.get(output_layer).maxCoeff();

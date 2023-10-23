@@ -21,7 +21,11 @@ private:
 
     void callbackGridMap(const grid_map_msgs::msg::GridMap::UniquePtr msg);
     
-    void getContours(grid_map::GridMap& map, const float label, std::vector<Eigen::MatrixXd>& contours_matrix, Eigen::Vector3d& normal);
+    void getContours(grid_map::GridMap& map, const float label, std::vector<Eigen::MatrixXd>& contours_matrix, Eigen::Vector3d& normal, Eigen::Vector2d& seed_pos);
     std::vector<float> findLabels(const grid_map::Matrix& labels);
+
+    iris::IRISProblem problem_;
+    iris::IRISOptions options_;
+    iris::Solver solver_;
 };
 }
