@@ -4,7 +4,7 @@ namespace convex_plane
 {
 
 ConvexPlaneExtractor::ConvexPlaneExtractor(const rclcpp::NodeOptions options)
-: rclcpp::Node("convex_plane_extractor", options), problem_(2)
+: rclcpp::Node("convex_plane_extractor", options)
 {
     sub_map_ = create_subscription<grid_map_msgs::msg::GridMap>(
         "convex_plane_extractor/input/grid_map", 1, std::bind(&ConvexPlaneExtractor::callbackGridMap, this, std::placeholders::_1)
@@ -12,6 +12,10 @@ ConvexPlaneExtractor::ConvexPlaneExtractor(const rclcpp::NodeOptions options)
 
     pub_map_ = create_publisher<grid_map_msgs::msg::GridMap>(
         "convex_plane_extractor/output/grid_map", 1
+    );
+    pub_plane_with_map_ = create_publisher<convex_plane_msgs::msg::ConvexPlanesWithGridMap>
+    (
+        "convex_plane_extractor/output/planes_with_map", 1
     );
 }
 
@@ -26,45 +30,58 @@ void ConvexPlaneExtractor::callbackGridMap(const grid_map_msgs::msg::GridMap::Un
     grid_map::GridMapRosConverter::fromMessage(*msg, map);
 
     const grid_map::Matrix labels = map.get("valid_labels");
-    std::vector<float> label_list = findLabels(labels);
+    std::vector<int> label_list = findLabels(labels);
     RCLCPP_INFO(get_logger(), "label list size: %ld", label_list.size());
-    // RCLCPP_INFO(get_logger(), "min label: %f", *std::min_element(label_list.begin(), label_list.end()));
-    // RCLCPP_INFO(get_logger(), "max label: %f", *std::max_element(label_list.begin(), label_list.end()));
+    // RCLCPP_INFO(get_logger(), "min label: %d", *std::min_element(label_list.begin(), label_list.end()));
+    // RCLCPP_INFO(get_logger(), "max label: %d", *std::max_element(label_list.begin(), label_list.end()));
     std::vector<Eigen::MatrixXd> contours;
     Eigen::Vector3d normal;
     Eigen::Vector2d seed_pos;
+
+    convex_plane_msgs::msg::ConvexPlanesWithGridMap::UniquePtr message;
     for (size_t i=0; i<label_list.size(); ++i)
     {
+        iris::IRISProblem problem(2);
         getContours(map, label_list[i], contours, normal, seed_pos);
-        problem_.setSeedPoint(seed_pos);
-        for (Eigen::MatrixXd& obs : contours) problem_.addObstacle(obs);
+        problem.setSeedPoint(seed_pos);
+        for (Eigen::MatrixXd& obs : contours) problem.addObstacle(obs);
         iris::IRISRegion region(2);
-        bool success = iris::inflate_region(problem_, options_, region, solver_);
+        bool success = iris::inflate_region(problem, options_, region, solver_);
 
         if (success)
         {
-            RCLCPP_INFO_STREAM(get_logger(), "C: " << region.ellipsoid.getC());
-            RCLCPP_INFO_STREAM(get_logger(), "d: " << region.ellipsoid.getD());
-            RCLCPP_INFO_STREAM(get_logger(), "A: " << region.polyhedron.getA());
-            RCLCPP_INFO_STREAM(get_logger(), "b: " << region.polyhedron.getB());
+            RCLCPP_INFO(get_logger(), "Convex region is found");
+            RCLCPP_DEBUG_STREAM(get_logger(), "C: " << region.ellipsoid.getC());
+            RCLCPP_DEBUG_STREAM(get_logger(), "d: " << region.ellipsoid.getD());
+            RCLCPP_DEBUG_STREAM(get_logger(), "A: " << region.polyhedron.getA());
+            RCLCPP_DEBUG_STREAM(get_logger(), "b: " << region.polyhedron.getB());
+
+            if (!convex_plane::ConvexPlaneConverter::addPlaneToMessage(region, normal, label_list[i], message->plane))
+            {
+                RCLCPP_ERROR(get_logger(), "ConvexPlanes message is invalid because the sizes of components are different");
+            }
+            RCLCPP_INFO(get_logger(), "Add Plane to the message");
         }
     }
 
     // RCLCPP_INFO(get_logger(), "convert to message");
+    // grid_map::GridMapRosConverter::toMessage(map, message->map);
     grid_map_msgs::msg::GridMap::UniquePtr out_msg = grid_map::GridMapRosConverter::toMessage(map);
 
     RCLCPP_INFO(get_logger(), "publish map address: 0x%x", &(out_msg->data));
     pub_map_->publish(std::move(out_msg));
-
+    // pub_plane_with_map_->publish(std::move(message));
+    
     auto end = std::chrono::high_resolution_clock::now();
 
     auto elapsed = std::chrono::duration_cast<std::chrono::duration<float>>(end - begin);
     RCLCPP_INFO(get_logger(), "processing time: %f", elapsed);
+
 }
 
-std::vector<float> ConvexPlaneExtractor::findLabels(const grid_map::Matrix& labels)
+std::vector<int> ConvexPlaneExtractor::findLabels(const grid_map::Matrix& labels)
 {
-    std::vector<float> label_list(0);
+    std::vector<int> label_list(0);
     for (int i=0; i<labels.rows(); ++i)
     {
         for (int j=0; j<labels.cols(); ++j)
@@ -87,7 +104,7 @@ std::vector<float> ConvexPlaneExtractor::findLabels(const grid_map::Matrix& labe
 
 
 
-void ConvexPlaneExtractor::getContours(grid_map::GridMap& map, const float label, std::vector<Eigen::MatrixXd>& contours_matrix, Eigen::Vector3d& normal, Eigen::Vector2d& seed_pos)
+void ConvexPlaneExtractor::getContours(grid_map::GridMap& map, const int label, std::vector<Eigen::MatrixXd>& contours_matrix, Eigen::Vector3d& normal, Eigen::Vector2d& seed_pos)
 {
     // RCLCPP_INFO(get_logger(), "create binary matrix");
     if (!map.exists("binary_matrix"))
@@ -129,7 +146,7 @@ void ConvexPlaneExtractor::getContours(grid_map::GridMap& map, const float label
         rclcpp::shutdown();
     }
     normal /= labeled_cell_num;
-    RCLCPP_INFO(get_logger(), "normal for label %f: (%lf, %lf, %lf)", label, normal(0), normal(1), normal(2));
+    RCLCPP_DEBUG(get_logger(), "normal for label %f: (%lf, %lf, %lf)", label, normal(0), normal(1), normal(2));
 
     // RCLCPP_INFO(get_logger(), "conver to image");
     cv::Mat label_image;
@@ -155,7 +172,7 @@ void ConvexPlaneExtractor::getContours(grid_map::GridMap& map, const float label
     contours_matrix.resize(point_num);
     grid_map::Position pos_xy;
     grid_map::Index index;
-    for (size_t i=0; i<point_num; ++i) contours_matrix[i].resize(2, 2);
+    for (int i=0; i<point_num; ++i) contours_matrix[i].resize(2, 2);
     for (const std::vector<cv::Point>& contour: contours)
     {
         for (size_t i=0; i<contour.size(); ++i)

@@ -27,6 +27,7 @@ find_package(std_msgs REQUIRED)
 find_package(iris REQUIRED)
 find_package(ifopt REQUIRED)
 find_package(autodiff REQUIRED)
+find_package(convex_plane_converter REQUIRED)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
@@ -48,6 +49,7 @@ set(dependencies
   iris
   autodiff
   ifopt
+  convex_plane_converter
 )
 
 add_library(${PROJECT_NAME} SHARED
