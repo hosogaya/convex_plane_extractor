@@ -38,23 +38,27 @@ void ConvexPlaneExtractor::callbackGridMap(const grid_map_msgs::msg::GridMap::Un
     Eigen::Vector3d normal;
     Eigen::Vector2d seed_pos;
 
-    convex_plane_msgs::msg::ConvexPlanesWithGridMap::UniquePtr message;
+    convex_plane_msgs::msg::ConvexPlanesWithGridMap::UniquePtr message = std::make_unique<convex_plane_msgs::msg::ConvexPlanesWithGridMap>();
     for (size_t i=0; i<label_list.size(); ++i)
     {
         iris::IRISProblem problem(2);
         getContours(map, label_list[i], contours, normal, seed_pos);
         problem.setSeedPoint(seed_pos);
-        for (Eigen::MatrixXd& obs : contours) problem.addObstacle(obs);
+        for (const Eigen::MatrixXd& obs : contours) {
+            problem.addObstacle(obs);
+            RCLCPP_DEBUG_STREAM(get_logger(), "obs: " << obs);
+        }
         iris::IRISRegion region(2);
         bool success = iris::inflate_region(problem, options_, region, solver_);
 
         if (success)
         {
-            RCLCPP_INFO(get_logger(), "Convex region is found");
-            RCLCPP_DEBUG_STREAM(get_logger(), "C: " << region.ellipsoid.getC());
-            RCLCPP_DEBUG_STREAM(get_logger(), "d: " << region.ellipsoid.getD());
-            RCLCPP_DEBUG_STREAM(get_logger(), "A: " << region.polyhedron.getA());
-            RCLCPP_DEBUG_STREAM(get_logger(), "b: " << region.polyhedron.getB());
+            RCLCPP_INFO(get_logger(), "Convex region labeled %d is found", label_list[i]);
+            RCLCPP_INFO_STREAM(get_logger(), "C: " << region.ellipsoid.getC());
+            RCLCPP_INFO_STREAM(get_logger(), "d: " << region.ellipsoid.getD());
+            RCLCPP_INFO_STREAM(get_logger(), "A: " << region.polyhedron.getA());
+            RCLCPP_INFO_STREAM(get_logger(), "b: " << region.polyhedron.getB());
+            RCLCPP_INFO_STREAM(get_logger(), "normal: " << normal);
 
             if (!convex_plane::ConvexPlaneConverter::addPlaneToMessage(region, normal, label_list[i], message->plane))
             {
@@ -65,12 +69,12 @@ void ConvexPlaneExtractor::callbackGridMap(const grid_map_msgs::msg::GridMap::Un
     }
 
     // RCLCPP_INFO(get_logger(), "convert to message");
-    // grid_map::GridMapRosConverter::toMessage(map, message->map);
+    grid_map::GridMapRosConverter::toMessage(map, message->map);
     grid_map_msgs::msg::GridMap::UniquePtr out_msg = grid_map::GridMapRosConverter::toMessage(map);
 
     RCLCPP_INFO(get_logger(), "publish map address: 0x%x", &(out_msg->data));
     pub_map_->publish(std::move(out_msg));
-    // pub_plane_with_map_->publish(std::move(message));
+    pub_plane_with_map_->publish(std::move(message));
     
     auto end = std::chrono::high_resolution_clock::now();
 
