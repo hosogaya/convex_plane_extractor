@@ -37,7 +37,7 @@ void ConvexPlaneExtractor::callbackGridMap(const grid_map_msgs::msg::GridMap::Un
     RCLCPP_INFO(get_logger(), "label list size: %ld", label_list.size());
     // RCLCPP_INFO(get_logger(), "min label: %d", *std::min_element(label_list.begin(), label_list.end()));
     // RCLCPP_INFO(get_logger(), "max label: %d", *std::max_element(label_list.begin(), label_list.end()));
-    std::vector<Eigen::MatrixXd> contours;
+    std::vector<iris_2d::Obstacle> contours;
     Eigen::Vector3d normal;
     Eigen::Vector2d seed_pos;
 
@@ -46,33 +46,26 @@ void ConvexPlaneExtractor::callbackGridMap(const grid_map_msgs::msg::GridMap::Un
     marker_array_.markers.shrink_to_fit();
     for (size_t i=0; i<label_list.size(); ++i)
     {
-        iris::IRISProblem problem(2);
         getContours(map, label_list[i], contours, normal, seed_pos);
         setMarkerArray(contours, map, label_list[i]);
         setMarkerArray(seed_pos, map, label_list[i]);
-        problem.setSeedPoint(seed_pos);
-        for (const Eigen::MatrixXd& obs : contours) {
-            problem.addObstacle(obs);
-            // RCLCPP_DEBUG_STREAM(get_logger(), "obs: " << obs);
-        }
-        iris::IRISRegion region(2);
-        bool success = iris::inflate_region(problem, options_, region, solver_);
+        problem_.initialize(seed_pos, contours);
 
-        if (success)
+        if (problem_.solve())
         {
             RCLCPP_INFO(get_logger(), "Convex region labeled %d is found", label_list[i]);
-            RCLCPP_INFO_STREAM(get_logger(), "C: " << region.ellipsoid.getC());
-            RCLCPP_INFO_STREAM(get_logger(), "d: " << region.ellipsoid.getD().transpose());
-            RCLCPP_INFO_STREAM(get_logger(), "A: " << region.polyhedron.getA());
-            RCLCPP_INFO_STREAM(get_logger(), "b: " << region.polyhedron.getB().transpose());
+            RCLCPP_INFO_STREAM(get_logger(), "C: " << problem_.getC());
+            RCLCPP_INFO_STREAM(get_logger(), "d: " << problem_.getD().transpose());
+            RCLCPP_INFO_STREAM(get_logger(), "A: " << problem_.getA());
+            RCLCPP_INFO_STREAM(get_logger(), "b: " << problem_.getB().transpose());
             RCLCPP_INFO_STREAM(get_logger(), "normal: " << normal);
 
-            if (!convex_plane::ConvexPlaneConverter::addPlaneToMessage(region, normal, label_list[i], message->plane))
+            if (!convex_plane::ConvexPlaneConverter::addPlaneToMessage(problem_.getRegion(), normal, label_list[i], message->plane))
             {
                 RCLCPP_ERROR(get_logger(), "ConvexPlanes message is invalid because the sizes of components are different");
             }
             RCLCPP_INFO(get_logger(), "Add Plane to the message");
-            setMarkerArray(region.ellipsoid.getC(), region.ellipsoid.getD(), map, label_list[i]);
+            setMarkerArray(problem_.getC(), problem_.getD(), map, label_list[i]);
         }
     }
     pub_marker_->publish(marker_array_);
@@ -116,7 +109,7 @@ std::vector<int> ConvexPlaneExtractor::findLabels(const grid_map::Matrix& labels
 
 
 
-void ConvexPlaneExtractor::getContours(grid_map::GridMap& map, const int label, std::vector<Eigen::MatrixXd>& contours_matrix, Eigen::Vector3d& normal, Eigen::Vector2d& seed_pos)
+void ConvexPlaneExtractor::getContours(grid_map::GridMap& map, const int label, std::vector<iris_2d::Obstacle>& contours_matrix, Eigen::Vector3d& normal, Eigen::Vector2d& seed_pos)
 {
     // RCLCPP_INFO(get_logger(), "create binary matrix");
     if (!map.exists("binary_matrix"))
@@ -222,7 +215,7 @@ void ConvexPlaneExtractor::getContours(grid_map::GridMap& map, const int label, 
     }
 }
 
-void ConvexPlaneExtractor::setMarkerArray(const std::vector<Eigen::MatrixXd>& contours, const grid_map::GridMap& map, const int label)
+void ConvexPlaneExtractor::setMarkerArray(const std::vector<iris_2d::Obstacle>& contours, const grid_map::GridMap& map, const int label)
 {
     visualization_msgs::msg::Marker marker;
     marker.header.frame_id = map.getFrameId();

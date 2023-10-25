@@ -15,7 +15,7 @@
   <depend>grid_map_ros</depend>
   <depend>grid_map_cv</depend>
   <depend>grid_map_msgs</depend>
-  <depend>iris</depend>
+  <depend>iris_2d</depend>
   <depend>convex_plane_converter</depend>
 
   <test_depend>ament_lint_auto</test_depend>

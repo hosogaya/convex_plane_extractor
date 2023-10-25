@@ -24,7 +24,7 @@ find_package(grid_map_ros REQUIRED)
 find_package(grid_map_cv REQUIRED)
 find_package(grid_map_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
-find_package(iris REQUIRED)
+find_package(iris_2d REQUIRED)
 find_package(ifopt REQUIRED)
 find_package(autodiff REQUIRED)
 find_package(convex_plane_converter REQUIRED)
@@ -46,7 +46,7 @@ set(dependencies
   grid_map_ros
   grid_map_cv
   grid_map_msgs
-  iris
+  iris_2d
   autodiff
   ifopt
   convex_plane_converter
@@ -56,7 +56,7 @@ add_library(${PROJECT_NAME} SHARED
   src/convex_plane_extractor.cpp
 )
 ament_target_dependencies(${PROJECT_NAME} ${dependencies})
-target_link_libraries(${PROJECT_NAME} iris autodiff::autodiff)
+target_link_libraries(${PROJECT_NAME} iris_2d autodiff::autodiff)
 target_include_directories(${PROJECT_NAME}
 PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
