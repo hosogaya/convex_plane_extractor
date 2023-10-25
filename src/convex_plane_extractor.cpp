@@ -17,6 +17,9 @@ ConvexPlaneExtractor::ConvexPlaneExtractor(const rclcpp::NodeOptions options)
     (
         "convex_plane_extractor/output/planes_with_map", 1
     );
+    pub_marker_ = create_publisher<visualization_msgs::msg::MarkerArray>(
+        "convex_plane_extractor/output/contours", 1
+    );
 }
 
 ConvexPlaneExtractor::~ConvexPlaneExtractor(){}
@@ -39,14 +42,18 @@ void ConvexPlaneExtractor::callbackGridMap(const grid_map_msgs::msg::GridMap::Un
     Eigen::Vector2d seed_pos;
 
     convex_plane_msgs::msg::ConvexPlanesWithGridMap::UniquePtr message = std::make_unique<convex_plane_msgs::msg::ConvexPlanesWithGridMap>();
+    marker_array_.markers.clear();
+    marker_array_.markers.shrink_to_fit();
     for (size_t i=0; i<label_list.size(); ++i)
     {
         iris::IRISProblem problem(2);
         getContours(map, label_list[i], contours, normal, seed_pos);
+        setMarkerArray(contours, map, label_list[i]);
+        setMarkerArray(seed_pos, map, label_list[i]);
         problem.setSeedPoint(seed_pos);
         for (const Eigen::MatrixXd& obs : contours) {
             problem.addObstacle(obs);
-            RCLCPP_DEBUG_STREAM(get_logger(), "obs: " << obs);
+            // RCLCPP_DEBUG_STREAM(get_logger(), "obs: " << obs);
         }
         iris::IRISRegion region(2);
         bool success = iris::inflate_region(problem, options_, region, solver_);
@@ -55,9 +62,9 @@ void ConvexPlaneExtractor::callbackGridMap(const grid_map_msgs::msg::GridMap::Un
         {
             RCLCPP_INFO(get_logger(), "Convex region labeled %d is found", label_list[i]);
             RCLCPP_INFO_STREAM(get_logger(), "C: " << region.ellipsoid.getC());
-            RCLCPP_INFO_STREAM(get_logger(), "d: " << region.ellipsoid.getD());
+            RCLCPP_INFO_STREAM(get_logger(), "d: " << region.ellipsoid.getD().transpose());
             RCLCPP_INFO_STREAM(get_logger(), "A: " << region.polyhedron.getA());
-            RCLCPP_INFO_STREAM(get_logger(), "b: " << region.polyhedron.getB());
+            RCLCPP_INFO_STREAM(get_logger(), "b: " << region.polyhedron.getB().transpose());
             RCLCPP_INFO_STREAM(get_logger(), "normal: " << normal);
 
             if (!convex_plane::ConvexPlaneConverter::addPlaneToMessage(region, normal, label_list[i], message->plane))
@@ -65,9 +72,10 @@ void ConvexPlaneExtractor::callbackGridMap(const grid_map_msgs::msg::GridMap::Un
                 RCLCPP_ERROR(get_logger(), "ConvexPlanes message is invalid because the sizes of components are different");
             }
             RCLCPP_INFO(get_logger(), "Add Plane to the message");
+            setMarkerArray(region.ellipsoid.getC(), region.ellipsoid.getD(), map, label_list[i]);
         }
     }
-
+    pub_marker_->publish(marker_array_);
     // RCLCPP_INFO(get_logger(), "convert to message");
     grid_map::GridMapRosConverter::toMessage(map, message->map);
     grid_map_msgs::msg::GridMap::UniquePtr out_msg = grid_map::GridMapRosConverter::toMessage(map);
@@ -159,7 +167,7 @@ void ConvexPlaneExtractor::getContours(grid_map::GridMap& map, const int label, 
     std::vector<std::vector<cv::Point>> contours;
     std::vector<cv::Vec4i> hierarchy;
     cv::Mat label_image_copy = label_image;
-    cv::findContours(label_image_copy, contours, hierarchy, CV_RETR_CCOMP, CV_CHAIN_APPROX_NONE);
+    cv::findContours(label_image_copy, contours, hierarchy, CV_RETR_CCOMP, CV_CHAIN_APPROX_SIMPLE);
     RCLCPP_INFO(get_logger(), "contour size: %ld", contours.size());
 
     int point_num = 0;
@@ -213,6 +221,108 @@ void ConvexPlaneExtractor::getContours(grid_map::GridMap& map, const int label, 
         map.at(output_layer, index) = median_value;
     }
 }
+
+void ConvexPlaneExtractor::setMarkerArray(const std::vector<Eigen::MatrixXd>& contours, const grid_map::GridMap& map, const int label)
+{
+    visualization_msgs::msg::Marker marker;
+    marker.header.frame_id = map.getFrameId();
+    marker.header.stamp = rclcpp::Time(map.getTimestamp());
+    marker.id = label;
+    marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
+    marker.action = visualization_msgs::msg::Marker::ADD;
+    marker.scale.x = 0.05;
+    marker.scale.y = 0.01;
+    marker.scale.z = 0.01;
+    marker.color.r = 0.0;
+    marker.color.g = 0.0;
+    marker.color.b = 1.0;
+    marker.color.a = 1.0;
+    marker.lifetime = rclcpp::Duration(0.0);
+
+    for (size_t i=0; i<contours.size(); ++i)
+    {
+        geometry_msgs::msg::Point point;
+        point.x = contours[i].col(0)[0];
+        point.y = contours[i].col(0)[1];
+        point.z = 1.0;
+
+        marker.points.push_back(point);
+    }
+
+    marker_array_.markers.push_back(marker);
+}
+
+void ConvexPlaneExtractor::setMarkerArray(const Eigen::VectorXd& seed, const grid_map::GridMap& map, const int label)
+{
+    visualization_msgs::msg::Marker marker;
+    marker.header.frame_id = map.getFrameId();
+    marker.header.stamp = rclcpp::Time(map.getTimestamp());
+    marker.id = label+1;
+    marker.type = visualization_msgs::msg::Marker::SPHERE;
+    marker.action = visualization_msgs::msg::Marker::ADD;
+    marker.scale.x = 0.2;
+    marker.scale.y = 0.2;
+    marker.scale.z = 0.2;
+    marker.color.r = 0.0;
+    marker.color.g = 0.0;
+    marker.color.b = 1.0;
+    marker.color.a = 1.0;
+    marker.lifetime = rclcpp::Duration(0.0);
+
+    marker.pose.position.x = seed[0];
+    marker.pose.position.y = seed[1];
+    marker.pose.position.z = 1.0;
+    marker.pose.orientation.x = 0.0;
+    marker.pose.orientation.y = 0.0;
+    marker.pose.orientation.z = 0.0;
+    marker.pose.orientation.w = 1.0;
+
+    marker_array_.markers.push_back(marker);
+}
+
+void ConvexPlaneExtractor::setMarkerArray(const Eigen::MatrixXd& C, const Eigen::VectorXd& d, const grid_map::GridMap& map, const int label)
+{
+    visualization_msgs::msg::Marker marker;
+    marker.header.frame_id = map.getFrameId();
+    marker.header.stamp = rclcpp::Time(map.getTimestamp());
+    marker.id = label+2;
+    marker.type = visualization_msgs::msg::Marker::SPHERE;
+    marker.action = visualization_msgs::msg::Marker::ADD;
+    marker.color.r = 1.0;
+    marker.color.g = 0.0;
+    marker.color.b = 0.0;
+    marker.color.a = 1.0;
+    marker.lifetime = rclcpp::Duration(0.0);
+
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d> eigensolver(C);
+    if (eigensolver.info() != Eigen::Success) {
+        RCLCPP_ERROR(get_logger(), "failed to get eigen value of C");
+        return ;
+    }
+
+    Eigen::Vector2d eigen = eigensolver.eigenvalues();
+    Eigen::Matrix2d eigen_vec = eigensolver.eigenvectors();
+
+    RCLCPP_INFO_STREAM(get_logger(), "eigen value: " << eigen);
+    RCLCPP_INFO_STREAM(get_logger(), "eigen vector: " << eigen_vec);
+
+
+    marker.scale.x = eigen(0);
+    marker.scale.y = eigen(1);
+    marker.scale.z = 1.0;
+    double rad = std::acos(eigen_vec.col(0).dot(Eigen::Vector2d::UnitX()));
+
+    marker.pose.position.x = d[0];
+    marker.pose.position.y = d[1];
+    marker.pose.position.z = 1.0;
+    marker.pose.orientation.x = 0.0;
+    marker.pose.orientation.y = 0.0;
+    marker.pose.orientation.z = std::sin(rad/2);
+    marker.pose.orientation.w = std::cos(rad/2);
+
+    marker_array_.markers.push_back(marker);
+}
+
 
 }
 
