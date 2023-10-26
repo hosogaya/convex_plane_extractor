@@ -27,7 +27,7 @@ ConvexPlaneExtractor::~ConvexPlaneExtractor(){}
 
 void ConvexPlaneExtractor::callbackGridMap(const grid_map_msgs::msg::GridMap::UniquePtr msg)
 {
-    auto begin = std::chrono::high_resolution_clock::now();   
+    std::chrono::system_clock::time_point begin = std::chrono::system_clock::now();   
     RCLCPP_INFO(get_logger(), "subscribe map address: 0x%x", &(msg->data));
     // RCLCPP_INFO(get_logger(), "convert form message");
     grid_map::GridMap map;
@@ -92,10 +92,10 @@ void ConvexPlaneExtractor::callbackGridMap(const grid_map_msgs::msg::GridMap::Un
     pub_map_->publish(std::move(out_msg));
     pub_plane_with_map_->publish(std::move(message));
     
-    auto end = std::chrono::high_resolution_clock::now();
+    std::chrono::system_clock::time_point end = std::chrono::system_clock::now();
 
-    auto elapsed = std::chrono::duration_cast<std::chrono::duration<float>>(end - begin);
-    RCLCPP_INFO(get_logger(), "processing time: %f", elapsed);
+    double elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count();
+    RCLCPP_INFO(get_logger(), "processing time: %lf", elapsed);
 
 }
 
