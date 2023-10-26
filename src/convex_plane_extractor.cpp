@@ -21,6 +21,8 @@ ConvexPlaneExtractor::ConvexPlaneExtractor(const rclcpp::NodeOptions options)
         "convex_plane_extractor/output/contours", 1
     );
 
+    problem_.setMaxIteration(5);
+
 }
 
 ConvexPlaneExtractor::~ConvexPlaneExtractor(){}
@@ -28,16 +30,13 @@ ConvexPlaneExtractor::~ConvexPlaneExtractor(){}
 void ConvexPlaneExtractor::callbackGridMap(const grid_map_msgs::msg::GridMap::UniquePtr msg)
 {
     std::chrono::system_clock::time_point begin = std::chrono::system_clock::now();   
-    RCLCPP_INFO(get_logger(), "subscribe map address: 0x%x", &(msg->data));
-    // RCLCPP_INFO(get_logger(), "convert form message");
+    // RCLCPP_INFO(get_logger(), "subscribe map address: 0x%x", &(msg->data));
     grid_map::GridMap map;
     grid_map::GridMapRosConverter::fromMessage(*msg, map);
 
     const grid_map::Matrix labels = map.get("valid_labels");
     std::vector<int> label_list = findLabels(labels);
-    RCLCPP_INFO(get_logger(), "label list size: %ld", label_list.size());
-    // RCLCPP_INFO(get_logger(), "min label: %d", *std::min_element(label_list.begin(), label_list.end()));
-    // RCLCPP_INFO(get_logger(), "max label: %d", *std::max_element(label_list.begin(), label_list.end()));
+    // RCLCPP_INFO(get_logger(), "label list size: %ld", label_list.size());
     std::vector<iris_2d::Obstacle> contours;
     Eigen::Vector3d normal;
     Eigen::Vector2d seed_pos;
@@ -46,32 +45,41 @@ void ConvexPlaneExtractor::callbackGridMap(const grid_map_msgs::msg::GridMap::Un
     marker_array_.markers.clear();
     marker_array_.markers.shrink_to_fit();
     grid_map::Index d_index;
+    auto total_s = std::chrono::system_clock::now();
     for (size_t i=0; i<label_list.size(); ++i)
     {
         getContours(map, label_list[i], contours, normal);
-        setMarkerArray(contours, map, label_list[i]);
+        // setMarkerArray(contours, map, label_list[i]); // show contour
         int j=0;
         problem_.setObstacle(contours);
-        RCLCPP_INFO(get_logger(), "Set Obstacle");
+        RCLCPP_INFO(get_logger(), "The number of Obstacles: %ld", contours.size());
+        auto iter_s = std::chrono::system_clock::now();
         for (; j<max_iteration_; ++j)
         {
             problem_.reset();
-            RCLCPP_INFO(get_logger(), "reset problem");
             seed_pos = getSeedPos(map, label_list[i]);
-            RCLCPP_INFO(get_logger(), "get seed");
             problem_.setSeedPos(seed_pos);
-            RCLCPP_INFO(get_logger(), "set seed");
-            if (problem_.solve())
-            {
-                if (map.getIndex(problem_.getD(), d_index)) break;
-            }
+            auto solve_s = std::chrono::system_clock::now();
+            bool result = problem_.solve();
+            auto solve_e = std::chrono::system_clock::now();
+            double elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(solve_e - solve_s).count();
+            RCLCPP_INFO(get_logger(), "Iris processing time: %lf", elapsed);
+            RCLCPP_INFO(get_logger(), "Ccp time: %lf, IeTime: %lf, iter: %d", problem_.getCcpTime(), problem_.getIeTime(), problem_.getIteration());
+            if (result) break;
         }
-        if (j == max_iteration_) continue;
-        setMarkerArray(seed_pos, map, label_list[i]);
+        auto iter_e = std::chrono::system_clock::now();
+        double elapsed  = std::chrono::duration_cast<std::chrono::milliseconds>(iter_e - iter_s).count();
+        RCLCPP_INFO(get_logger(), "Total time for a label: %lf", elapsed);
+        if (j == max_iteration_) {
+            RCLCPP_ERROR(get_logger(), "Failed to get convex area");
+            continue;
+        }
+        RCLCPP_INFO(get_logger(), "The number of iteration: %d", j+1);
+        setMarkerArray(seed_pos, map, label_list[i]); // show seed 
 
-        RCLCPP_INFO(get_logger(), "Convex region labeled %d is found", label_list[i]);
-        RCLCPP_INFO_STREAM(get_logger(), "C: " << problem_.getC());
-        RCLCPP_INFO_STREAM(get_logger(), "d: " << problem_.getD().transpose());
+        // RCLCPP_INFO(get_logger(), "Convex region labeled %d is found", label_list[i]);
+        // RCLCPP_INFO_STREAM(get_logger(), "C: " << problem_.getC());
+        // RCLCPP_INFO_STREAM(get_logger(), "d: " << problem_.getD().transpose());
         // RCLCPP_INFO_STREAM(get_logger(), "A: " << problem_.getA());
         // RCLCPP_INFO_STREAM(get_logger(), "b: " << problem_.getB().transpose());
         // RCLCPP_INFO_STREAM(get_logger(), "normal: " << normal.transpose());
@@ -80,16 +88,18 @@ void ConvexPlaneExtractor::callbackGridMap(const grid_map_msgs::msg::GridMap::Un
         {
             RCLCPP_ERROR(get_logger(), "ConvexPlanes message is invalid because the sizes of components are different");
         }
-        RCLCPP_INFO(get_logger(), "Add Plane to the message");
-        setMarkerArray(problem_.getC(), problem_.getD(), map, label_list[i]);
+        // setMarkerArray(problem_.getC(), problem_.getD(), map, label_list[i]); // show ellipsoid
     }
+    auto total_e = std::chrono::system_clock::now();
+    double total_duration = std::chrono::duration_cast<std::chrono::milliseconds>(total_e - total_s).count();
+    RCLCPP_INFO(get_logger(), "Total time for computing all convex area: %lf", total_duration);
     pub_marker_->publish(marker_array_);
     // RCLCPP_INFO(get_logger(), "convert to message");
     grid_map::GridMapRosConverter::toMessage(map, message->map);
-    grid_map_msgs::msg::GridMap::UniquePtr out_msg = grid_map::GridMapRosConverter::toMessage(map);
+    // grid_map_msgs::msg::GridMap::UniquePtr out_msg = grid_map::GridMapRosConverter::toMessage(map);
 
-    RCLCPP_INFO(get_logger(), "publish map address: 0x%x", &(out_msg->data));
-    pub_map_->publish(std::move(out_msg));
+    // RCLCPP_INFO(get_logger(), "publish map address: 0x%x", &(out_msg->data));
+    // pub_map_->publish(std::move(out_msg));
     pub_plane_with_map_->publish(std::move(message));
     
     std::chrono::system_clock::time_point end = std::chrono::system_clock::now();
@@ -127,9 +137,14 @@ std::vector<int> ConvexPlaneExtractor::findLabels(const grid_map::Matrix& labels
 void ConvexPlaneExtractor::getContours(grid_map::GridMap& map, const int label, std::vector<iris_2d::Obstacle>& contours_matrix, Eigen::Vector3d& normal)
 {
     // RCLCPP_INFO(get_logger(), "create binary matrix");
+    auto start = std::chrono::system_clock::now();
     if (!map.exists("binary_matrix"))
     {
         map.add("binary_matrix", map.get("valid_labels"));
+    }
+    else 
+    {
+        map.get("binary_matrix") = map.get("valid_labels");
     }
     grid_map::Matrix& binary = map.get("binary_matrix");
     const grid_map::Matrix& normal_x = map.get("normal_vectors_x");
@@ -163,7 +178,6 @@ void ConvexPlaneExtractor::getContours(grid_map::GridMap& map, const int label, 
         rclcpp::shutdown();
     }
     normal /= labeled_cell_num;
-    RCLCPP_DEBUG(get_logger(), "normal for label %f: (%lf, %lf, %lf)", label, normal(0), normal(1), normal(2));
 
     // RCLCPP_INFO(get_logger(), "conver to image");
     cv::Mat label_image;
@@ -172,8 +186,7 @@ void ConvexPlaneExtractor::getContours(grid_map::GridMap& map, const int label, 
     std::vector<std::vector<cv::Point>> contours;
     std::vector<cv::Vec4i> hierarchy;
     cv::Mat label_image_copy = label_image;
-    cv::findContours(label_image_copy, contours, hierarchy, CV_RETR_CCOMP, CV_CHAIN_APPROX_SIMPLE);
-    RCLCPP_INFO(get_logger(), "contour size: %ld", contours.size());
+    cv::findContours(label_image_copy, contours, hierarchy, CV_RETR_CCOMP, CV_CHAIN_APPROX_NONE);
 
     int point_num = 0;
     for (size_t i=0; i<contours.size(); ++i)
@@ -210,12 +223,40 @@ void ConvexPlaneExtractor::getContours(grid_map::GridMap& map, const int label, 
         }
         contours_index+=contour.size();
     }
-    RCLCPP_INFO(get_logger(), "finish getContour()");
+
+    auto end = std::chrono::system_clock::now();
+    double elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+    RCLCPP_INFO(get_logger(), "getContours time: %lf", elapsed);
+}
+
+iris_2d::Vector ConvexPlaneExtractor::getSeedPos(const grid_map::GridMap& map, const int label)
+{
+    std::chrono::system_clock::time_point start = std::chrono::system_clock::now();
+    iris_2d::Vector seed_pos;
+    std::random_device seed_gen;
+    std::mt19937 engine(seed_gen());
+    std::uniform_int_distribution<> dist_x(0, map.getSize()[0]);
+    std::uniform_int_distribution<> dist_y(0, map.getSize()[1]);
+    grid_map::Index index;
+    std::string layer = "plane_"+std::to_string(label);
+    while (true)
+    {
+        index.x() = dist_x(engine);
+        index.y() = dist_y(engine);
+        if (map.at(layer, index) == label)
+        {
+            map.getPosition(index, seed_pos);
+            break;
+        }
+    }
+    std::chrono::system_clock::time_point end = std::chrono::system_clock::now();
+    double elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+    RCLCPP_INFO(get_logger(), "get seed time: %lf", elapsed);
+    return seed_pos;
 }
 
 void ConvexPlaneExtractor::setMarkerArray(const std::vector<iris_2d::Obstacle>& contours, const grid_map::GridMap& map, const int label)
 {
-    RCLCPP_INFO(get_logger(), "set marker array for contour is called");
     visualization_msgs::msg::Marker marker;
     marker.header.frame_id = map.getFrameId();
     marker.header.stamp = rclcpp::Time(map.getTimestamp());
@@ -242,32 +283,6 @@ void ConvexPlaneExtractor::setMarkerArray(const std::vector<iris_2d::Obstacle>& 
     }
 
     marker_array_.markers.push_back(marker);
-    RCLCPP_INFO(get_logger(), "set marker array for contour is finished");
-}
-
-iris_2d::Vector ConvexPlaneExtractor::getSeedPos(const grid_map::GridMap& map, const int label)
-{
-    RCLCPP_INFO(get_logger(), "getSeedPos() is called");
-    iris_2d::Vector seed_pos;
-    std::random_device seed_gen;
-    std::mt19937 engine(seed_gen());
-    std::uniform_int_distribution<> dist_x(0, map.getSize()[0]);
-    std::uniform_int_distribution<> dist_y(0, map.getSize()[1]);
-    grid_map::Index index;
-    std::string layer = "plane_"+std::to_string(label);
-    while (true)
-    {
-        index.x() = dist_x(engine);
-        index.y() = dist_y(engine);
-        if (map.at(layer, index) == label)
-        {
-            map.getPosition(index, seed_pos);
-            break;
-        }
-    }
-    RCLCPP_INFO(get_logger(), "getSeedPos() is finished");
-
-    return seed_pos;
 }
 
 
