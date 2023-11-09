@@ -22,7 +22,6 @@ ConvexPlaneExtractor::ConvexPlaneExtractor(const rclcpp::NodeOptions options)
         "convex_plane_extractor/output/contours", 1
     );
 
-    omp_set_num_threads(5);
     problem_.resize(omp_get_max_threads());
     for (size_t i=0; i<problem_.size(); ++i)
         problem_[i].setMaxIteration(5);
@@ -62,17 +61,18 @@ void ConvexPlaneExtractor::callbackGridMap(const grid_map_msgs::msg::GridMap::Un
         // setMarkerArray(contours, map, label_list[i]); // show contour
         int j=0;
         problem_[id].setObstacle(contours);
-        RCLCPP_INFO(get_logger(), "The number of Obstacles: %ld", contours.size());
+        // RCLCPP_INFO(get_logger(), "The number of Obstacles: %ld", contours.size());
         auto iter_s = std::chrono::system_clock::now();
+        
         for (; j<max_iteration_; ++j)
         {
             problem_[id].reset();
             seed_pos = getSeedPos(map, label_list[i]);
             problem_[id].setSeedPos(seed_pos);
-            auto solve_s = std::chrono::system_clock::now();
+            // auto solve_s = std::chrono::system_clock::now();
             bool result = problem_[id].solve();
-            auto solve_e = std::chrono::system_clock::now();
-            double elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(solve_e - solve_s).count();
+            // auto solve_e = std::chrono::system_clock::now();
+            // double elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(solve_e - solve_s).count();
             // RCLCPP_INFO(get_logger(), "Iris processing time: %lf", elapsed);
             // RCLCPP_INFO(get_logger(), "Ccp time: %lf, IeTime: %lf, iter: %d", problem_[id].getCcpTime(), problem_[id].getIeTime(), problem_[id].getIteration());
             if (result) break;
