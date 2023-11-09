@@ -1,4 +1,5 @@
 #include <convex_plane_extractor/convex_plane_extractor.h>
+#include <omp.h>
 
 namespace convex_plane
 {
@@ -21,7 +22,10 @@ ConvexPlaneExtractor::ConvexPlaneExtractor(const rclcpp::NodeOptions options)
         "convex_plane_extractor/output/contours", 1
     );
 
-    problem_.setMaxIteration(5);
+    omp_set_num_threads(5);
+    problem_.resize(omp_get_max_threads());
+    for (size_t i=0; i<problem_.size(); ++i)
+        problem_[i].setMaxIteration(5);
 
 }
 
@@ -37,59 +41,73 @@ void ConvexPlaneExtractor::callbackGridMap(const grid_map_msgs::msg::GridMap::Un
     const grid_map::Matrix labels = map.get("valid_labels");
     std::vector<int> label_list = findLabels(labels);
     // RCLCPP_INFO(get_logger(), "label list size: %ld", label_list.size());
-    std::vector<iris_2d::Obstacle> contours;
-    Eigen::Vector3d normal;
-    Eigen::Vector2d seed_pos;
 
     convex_plane_msgs::msg::ConvexPlanesWithGridMap::UniquePtr message = std::make_unique<convex_plane_msgs::msg::ConvexPlanesWithGridMap>();
     marker_array_.markers.clear();
     marker_array_.markers.shrink_to_fit();
     grid_map::Index d_index;
     auto total_s = std::chrono::system_clock::now();
+
+    #pragma omp parallel for
     for (size_t i=0; i<label_list.size(); ++i)
     {
-        getContours(map, label_list[i], contours, normal);
+        int id = omp_get_thread_num();
+        std::vector<iris_2d::Obstacle> contours;
+        Eigen::Vector3d normal;
+        Eigen::Vector2d seed_pos;
+        {
+            #pragma omp critical
+            getContours(map, label_list[i], contours, normal);
+        }
         // setMarkerArray(contours, map, label_list[i]); // show contour
         int j=0;
-        problem_.setObstacle(contours);
+        problem_[id].setObstacle(contours);
         RCLCPP_INFO(get_logger(), "The number of Obstacles: %ld", contours.size());
         auto iter_s = std::chrono::system_clock::now();
         for (; j<max_iteration_; ++j)
         {
-            problem_.reset();
+            problem_[id].reset();
             seed_pos = getSeedPos(map, label_list[i]);
-            problem_.setSeedPos(seed_pos);
+            problem_[id].setSeedPos(seed_pos);
             auto solve_s = std::chrono::system_clock::now();
-            bool result = problem_.solve();
+            bool result = problem_[id].solve();
             auto solve_e = std::chrono::system_clock::now();
             double elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(solve_e - solve_s).count();
-            RCLCPP_INFO(get_logger(), "Iris processing time: %lf", elapsed);
-            RCLCPP_INFO(get_logger(), "Ccp time: %lf, IeTime: %lf, iter: %d", problem_.getCcpTime(), problem_.getIeTime(), problem_.getIteration());
+            // RCLCPP_INFO(get_logger(), "Iris processing time: %lf", elapsed);
+            // RCLCPP_INFO(get_logger(), "Ccp time: %lf, IeTime: %lf, iter: %d", problem_[id].getCcpTime(), problem_[id].getIeTime(), problem_[id].getIteration());
             if (result) break;
         }
         auto iter_e = std::chrono::system_clock::now();
         double elapsed  = std::chrono::duration_cast<std::chrono::milliseconds>(iter_e - iter_s).count();
-        RCLCPP_INFO(get_logger(), "Total time for a label: %lf", elapsed);
+        {
+            #pragma omp ciritical
+            RCLCPP_INFO(get_logger(), "Total time for a label: %lf", elapsed);
+        }
         if (j == max_iteration_) {
             RCLCPP_ERROR(get_logger(), "Failed to get convex area");
             continue;
         }
         RCLCPP_INFO(get_logger(), "The number of iteration: %d", j+1);
-        setMarkerArray(seed_pos, map, label_list[i]); // show seed 
-
+        {
+            #pragma omp critical
+            setMarkerArray(seed_pos, map, label_list[i]); // show seed 
+        }
         // RCLCPP_INFO(get_logger(), "Convex region labeled %d is found", label_list[i]);
-        // RCLCPP_INFO_STREAM(get_logger(), "C: " << problem_.getC());
-        // RCLCPP_INFO_STREAM(get_logger(), "d: " << problem_.getD().transpose());
-        // RCLCPP_INFO_STREAM(get_logger(), "A: " << problem_.getA());
-        // RCLCPP_INFO_STREAM(get_logger(), "b: " << problem_.getB().transpose());
+        // RCLCPP_INFO_STREAM(get_logger(), "C: " << problem_[id].getC());
+        // RCLCPP_INFO_STREAM(get_logger(), "d: " << problem_[id].getD().transpose());
+        // RCLCPP_INFO_STREAM(get_logger(), "A: " << problem_[id].getA());
+        // RCLCPP_INFO_STREAM(get_logger(), "b: " << problem_[id].getB().transpose());
         // RCLCPP_INFO_STREAM(get_logger(), "normal: " << normal.transpose());
 
-        if (!convex_plane::ConvexPlaneConverter::addPlaneToMessage(problem_.getRegion(), normal, label_list[i], message->plane))
+        if (!convex_plane::ConvexPlaneConverter::addPlaneToMessage(problem_[id].getRegion(), normal, label_list[i], message->plane))
         {
             RCLCPP_ERROR(get_logger(), "ConvexPlanes message is invalid because the sizes of components are different");
         }
-        // setMarkerArray(problem_.getC(), problem_.getD(), map, label_list[i]); // show ellipsoid
-    }
+        {
+            #pragma omp critical
+            setMarkerArray(problem_[id].getC(), problem_[id].getD(), map, label_list[i]); // show ellipsoid
+        }
+    }   
     auto total_e = std::chrono::system_clock::now();
     double total_duration = std::chrono::duration_cast<std::chrono::milliseconds>(total_e - total_s).count();
     RCLCPP_INFO(get_logger(), "Total time for computing all convex area: %lf", total_duration);

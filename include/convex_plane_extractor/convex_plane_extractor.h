@@ -33,7 +33,7 @@ private:
     void setMarkerArray(const std::vector<iris_2d::Obstacle>& contours, const grid_map::GridMap& map, const int label);
     void setMarkerArray(const Eigen::VectorXd& seed, const grid_map::GridMap& map, const int label);
     void setMarkerArray(const Eigen::MatrixXd& C, const Eigen::VectorXd& d, const grid_map::GridMap& map, const int label);
-    iris_2d::Problem problem_;
+    std::vector<iris_2d::Problem> problem_;
     visualization_msgs::msg::MarkerArray marker_array_;
     int max_iteration_ = 10;
 };
